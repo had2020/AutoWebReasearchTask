@@ -119,6 +119,9 @@ just give a concise next logical next action based on these possbile inputs that
 (tab), (enter), (uparrow), (downarrow), (typing input), (search input),
 (return to duckduckgo),
 (or say if the goal of the search is complete, and it is time to respond to the user)
+
+for example if the LLM was typting last time, than you should likely suggest it enter that input with (enter).
+
 ### LAST AGENT HISTORY CONTEXT";
 
 fn get_split(input: &str) -> Option<&str> {
@@ -137,7 +140,7 @@ fn main() {
     println!("Please enter your prompt for the research task:");
     let scout_task = input();
     */
-    let scout_task = "Figure out how to make a binary neural network?";
+    let scout_task = "Find a used Toyota Yaris 2009 in San Diego";
 
     let browser = Browser::default().unwrap();
     let tab = browser.new_tab().unwrap();
@@ -189,13 +192,15 @@ fn main() {
                 BROWSERPROMPT, scout_task, next_context, focused_ele_string
             ),
             &base64_encoded,
-            500,
+            1000,
         )
         .unwrap();
 
         println!("{}", response); // debug
 
-        let command_start = (response.rsplit_once('$')).unwrap().1;
+        let command_start = (response.rsplit_once('$'))
+            .unwrap_or(("xxxxxxxxxxxx", "xxxxxxxxxxxxxx"))
+            .1;
         unsafe {
             match command_start.get_unchecked(0..7) {
                 "RUN TAB" => {
@@ -238,7 +243,7 @@ fn main() {
                 "{}{} ### SEARCH TASK {}",
                 NEXTCONTEXTPROMPT, response, scout_task
             ),
-            100,
+            1000,
         )
         .unwrap();
 
