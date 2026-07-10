@@ -83,13 +83,18 @@ pub fn send_image_to_llm(
 
 const BROWSERPROMPT: &str = "
     You are a browser agent. Analyze the provided accessibility tree and screenshot. 
-    Return ONLY one action at a time from this list, and make sure to say RUN, before the select action to confirm:
+    Make sure to say $RUN, before the select action to confirm:
     TAB - Focus next
     ENTER - Submit
     UPARROW - Scrolls up
     DOWNARROW - Scrolls down
     TYPING text between these gets typed ENDTYPING 
     HOME - Return to search engine home
+    END - Once your task is complete, you can choose this one, and write a response 
+    end of actions
+    
+    example: $RUN TAB
+
     Your reaserch task is:
 ";
 
@@ -147,9 +152,11 @@ fn main() {
                 BROWSERPROMPT, scout_task, focused_element_info
             ),
             &base64_encoded,
-            200,
+            500,
         )
         .unwrap();
+
+        //let command_start = (response.rsplit_once('$')).unwrap().0;
 
         println!("{}", response);
     }
