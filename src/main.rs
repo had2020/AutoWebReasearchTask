@@ -77,16 +77,17 @@ pub fn send_image_to_llm(
     response.text()
 }
 
-const SCREENSHOTPROMPT: &str = "based off the screenshot reply";
-
 fn main() {
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(120)) // Increase to 2 minutes or more
         .build()
         .unwrap();
 
+    /*
     println!("Please enter your prompt for the research task:");
     let scout_task = input();
+    */
+    let scout_task = "Figure out how to make a binary neural network?";
 
     let browser = Browser::default().unwrap();
     let tab = browser.new_tab().unwrap();
@@ -100,11 +101,8 @@ fn main() {
             .capture_screenshot(Page::CaptureScreenshotFormatOption::Jpeg, None, None, true)
             .unwrap();
 
-        // 1. Encode in memory
         let base64_encoded = general_purpose::STANDARD.encode(&jpeg_data);
 
-        // 2. Pass to your vision-capable LLM function
-        // Using the structure defined in the previous step
         let response = send_image_to_llm(
             &client,
             &format!(
@@ -112,10 +110,8 @@ fn main() {
                 scout_task
             ),
             &base64_encoded,
-            500,
+            1000,
         );
-
-        println!("LLM Analysis: {:?}", response);
     }
 
     /*
