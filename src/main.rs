@@ -83,20 +83,26 @@ pub fn send_image_to_llm(
 
 const BROWSERPROMPT: &str = "
     You are a browser agent. Analyze the provided accessibility tree and screenshot. 
-    Make sure to say $RUN, before the select action to confirm:
-    TAB - Focus next
-    ENTER - Submit
-    UPARROW - Scrolls up
-    DOWNARROW - Scrolls down
-    TYPING text between these gets typed ENDTYPING 
-    HOME - Return to search engine home
-    END - Once your task is complete, you can choose this one, and write a response 
+    Make sure to say $RUN, before the select action to confirm, and ONLY RUN ONE command seqeunce at a time, as only the first sequence will execute:
+    TAB! - Focus next
+    ENTER! - Submit
+    UPARROW! - Scrolls up
+    DOWNARROW! - Scrolls down
+    TYPING>text between these gets typed.<ENDTYPING! 
+    DUCKDUCKGO! - Return to search engine home
+    END! - Once your task is complete, you can choose this one, and write a response 
     end of actions
     
     example: $RUN TAB
 
     Your reaserch task is:
 ";
+
+fn get_split(input: &str) -> Option<&str> {
+    let (_, front) = input.rsplit_once('>')?;
+    let (both, _) = front.rsplit_once('<')?;
+    Some(both)
+}
 
 fn main() {
     let client = reqwest::blocking::Client::builder()
@@ -115,8 +121,6 @@ fn main() {
 
     tab.navigate_to("https://duckduckgo.com").unwrap();
     tab.wait_until_navigated().unwrap();
-
-    tab.press_key("Tab").unwrap();
 
     // scout loop
     loop {
@@ -143,6 +147,8 @@ fn main() {
             .capture_screenshot(Page::CaptureScreenshotFormatOption::Jpeg, None, None, true)
             .unwrap();
 
+        std::fs::write("screenshot.jpeg", jpeg_data.clone()).unwrap(); // debugging
+
         let base64_encoded = general_purpose::STANDARD.encode(&jpeg_data);
 
         let response = send_image_to_llm(
@@ -156,9 +162,39 @@ fn main() {
         )
         .unwrap();
 
-        //let command_start = (response.rsplit_once('$')).unwrap().0;
-
         println!("{}", response);
+
+        let command_start = (response.rsplit_once('$')).unwrap().1;
+        unsafe {
+            match command_start.get_unchecked(0..7) {
+                "RUN TAB" => {
+                    tab.press_key("Tab");
+                }
+                "RUN ENT" => {
+                    tab.press_key("Enter");
+                }
+                "RUN UPA" => {
+                    tab.press_key("ArrowUp");
+                }
+                "RUN DOW" => {
+                    tab.press_key("ArrowDown");
+                }
+                "RUN TYP" => {
+                    let both_split = get_split(command_start)
+                        .unwrap_or("Failed to parse your text, from command sequence.");
+                    tab.type_str(both_split);
+                }
+                "RUN DUC" => {
+                    tab.navigate_to("https://duckduckgo.com");
+                }
+                "RUN END" => {
+                    break;
+                }
+                _ => {
+                    println!("FAILED COMMAND:{}", command_start.get_unchecked(0..7))
+                }
+            }
+        }
     }
 
     /*
