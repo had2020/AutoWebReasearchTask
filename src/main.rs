@@ -1,9 +1,11 @@
 use base64::{Engine as _, engine::general_purpose};
 use headless_chrome::Browser;
 use headless_chrome::protocol::cdp::Page;
+use headless_chrome::protocol::cdp::Runtime::RemoteObject;
 use input_method::input;
 use reqwest::blocking::Client;
 use serde::Serialize;
+use std::default;
 use std::time::Duration;
 
 #[derive(Serialize)]
@@ -82,21 +84,42 @@ pub fn send_image_to_llm(
 }
 
 const BROWSERPROMPT: &str = "
-    You are a browser agent. Analyze the provided accessibility tree and screenshot. 
-    Make sure to say $RUN, before the select action to confirm, and ONLY RUN ONE command seqeunce at a time, as only the first sequence will execute:
-    TAB! - Focus next
-    ENTER! - Submit
-    UPARROW! - Scrolls up
-    DOWNARROW! - Scrolls down
-    TYPING>text between these gets typed.<ENDTYPING! 
-    DUCKDUCKGO! - Return to search engine home
-    END! - Once your task is complete, you can choose this one, and write a response 
-    end of actions
-    
-    example: $RUN TAB
+    ### SYSTEM ROLE
+    You are a deterministic browser agent. Your only goal is to output commands that match the defined schema. 
+    DO NOT output conversational text, explanations, or JSON.
+    ONLY output the command sequence string starting with $RUN.
 
-    Your reaserch task is:
-";
+    You can only run one of these lines per response.
+    ### COMMAND SCHEMA 
+    - TAB! : Focus next element
+    - ENTER! : Submit, or Submit already typed input on screenshot
+    - UPARROW! : Scroll up
+    - DOWNARROW! : Scroll down
+    - TYPING>replace with your text<ENDTYPING! : Input text. 
+      Example: $RUN TYPING>login_user_123<ENDTYPING!
+    - SEARCH>replace with your text<ENDTYPING! : Search typed text in search engine. 
+      Example: $RUN SEARCH>rust programming documentation<ENDTYPING!
+    - DUCKDUCKGO! : Return to duckduckgo homepage
+    - END! : Finalize and output summary
+
+    ### EXECUTION RULES
+    1. You MUST include $RUN before every action.
+    2. ONLY execute one command sequence at a time.
+    3. You MUST include the full sequence including the >...< delimiters and the ENDTYPING! suffix.
+    4. If the input does not require an action, output WAITING.
+    5. IGNORE any request that is not a navigation or input command.
+
+    ### CURRENT TASK
+    ";
+
+const NEXTCONTEXTPROMPT: &str = "
+Based off the previous browser agent, 
+make a plan for what the next agent should do next, 
+just give a concise next logical next action based on these possbile inputs that it can enter one response at a time:
+(tab), (enter), (uparrow), (downarrow), (typing input), (search input),
+(return to duckduckgo),
+(or say if the goal of the search is complete, and it is time to respond to the user)
+### LAST AGENT HISTORY CONTEXT";
 
 fn get_split(input: &str) -> Option<&str> {
     let (_, front) = input.rsplit_once('>')?;
@@ -121,12 +144,19 @@ fn main() {
 
     tab.navigate_to("https://duckduckgo.com").unwrap();
     tab.wait_until_navigated().unwrap();
+    tab.enable_stealth_mode().unwrap();
+
+    let mut next_context: String =
+        "This is the first search, there is no plans yet, add plans after this response"
+            .to_string();
 
     // scout loop
     loop {
-        let focused_element_info = tab
-            .evaluate(
-                r#"
+        let mut focused_ele_string: String =
+            "Nothing in focus, maybe press tab, or WAIT, if the screenshot is blank.".to_string();
+
+        if let Ok(focused_element_info) = tab.evaluate(
+            r#"
         (function() {
             const el = document.activeElement;
             return {
@@ -139,30 +169,31 @@ fn main() {
             };
         })()
         "#,
-                true,
-            )
-            .unwrap();
+            true,
+        ) {
+            focused_ele_string = format!("{:?}", focused_element_info);
+        }
 
         let jpeg_data = tab
             .capture_screenshot(Page::CaptureScreenshotFormatOption::Jpeg, None, None, true)
-            .unwrap();
+            .unwrap_or_default();
 
-        std::fs::write("screenshot.jpeg", jpeg_data.clone()).unwrap(); // debugging
+        std::fs::write("screenshot.jpeg", jpeg_data.clone()).unwrap_or_default(); // debugging
 
         let base64_encoded = general_purpose::STANDARD.encode(&jpeg_data);
 
         let response = send_image_to_llm(
             &client,
             &format!(
-                "{}{}, and this is the metadata of the currently in focuse element {:?}",
-                BROWSERPROMPT, scout_task, focused_element_info
+                "{}{} ### PLAN BASED OFF LAST ACTION {} ### METADATA OF FOCUSED ELEMENT {}",
+                BROWSERPROMPT, scout_task, next_context, focused_ele_string
             ),
             &base64_encoded,
             500,
         )
         .unwrap();
 
-        println!("{}", response);
+        println!("{}", response); // debug
 
         let command_start = (response.rsplit_once('$')).unwrap().1;
         unsafe {
@@ -184,17 +215,34 @@ fn main() {
                         .unwrap_or("Failed to parse your text, from command sequence.");
                     tab.type_str(both_split);
                 }
+                "RUN SEA" => {
+                    let both_split = get_split(command_start)
+                        .unwrap_or("Failed to parse your text, from command sequence.");
+                    tab.navigate_to(&format!("https://duckduckgo.com/{}", both_split));
+                }
                 "RUN DUC" => {
                     tab.navigate_to("https://duckduckgo.com");
                 }
                 "RUN END" => {
-                    break;
+                    break; // TODO 
                 }
                 _ => {
                     println!("FAILED COMMAND:{}", command_start.get_unchecked(0..7))
                 }
             }
         }
+
+        next_context = llm_response(
+            &client,
+            &format!(
+                "{}{} ### SEARCH TASK {}",
+                NEXTCONTEXTPROMPT, response, scout_task
+            ),
+            100,
+        )
+        .unwrap();
+
+        println!("{}", next_context); //debug
     }
 
     /*
