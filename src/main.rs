@@ -1,12 +1,10 @@
+use base64::{Engine as _, engine::general_purpose};
 use headless_chrome::Browser;
 use headless_chrome::protocol::cdp::Page;
 use input_method::input;
-use std::process::Command;
-
 use reqwest::blocking::Client;
 use serde::Serialize;
-
-use rusqlite::Connection;
+use std::time::Duration;
 
 #[derive(Serialize)]
 struct Message<'a> {
@@ -49,8 +47,52 @@ pub fn llm_response(client: &Client, input: &str) -> Result<String, reqwest::Err
     response.text()
 }
 
+pub fn send_image_to_llm(
+    client: &reqwest::blocking::Client,
+    text_prompt: &str,
+    base64_image: &str,
+    max_tokens: u16,
+) -> Result<String, reqwest::Error> {
+    let payload = serde_json::json!({
+        "model": "google/gemma-4-e2b",
+        "messages": [{
+            "role": "user",
+            "content": [
+                { "type": "text", "text": text_prompt },
+                {
+                    "type": "image_url",
+                    "image_url": { "url": format!("data:image/jpeg;base64,{}", base64_image) }
+                }
+            ]
+        }],
+        "temperature": 0.0,
+        "max_tokens": max_tokens,
+    });
+
+    let response = client
+        .post("http://localhost:1234/v1/chat/completions")
+        .json(&payload)
+        .send()?;
+
+    response.text()
+}
+
+const SCREENSHOTPROMPT: &str = "based off the screenshot reply";
+
+enum AgentState {
+    Observing,
+    Reasoning,
+    Acting,
+    Done,
+}
+
 fn main() {
-    println!("Please enter your prompt for the task to research:");
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(120)) // Increase to 2 minutes or more
+        .build()
+        .unwrap();
+
+    println!("Please enter your prompt for the research task:");
     let scout_task = input();
 
     let browser = Browser::default().unwrap();
@@ -65,6 +107,25 @@ fn main() {
             .capture_screenshot(Page::CaptureScreenshotFormatOption::Jpeg, None, None, true)
             .unwrap();
         std::fs::write("screenshot.jpeg", jpeg_data).unwrap();
+
+        let jpeg_data = tab
+            .capture_screenshot(Page::CaptureScreenshotFormatOption::Jpeg, None, None, true)
+            .unwrap();
+
+        // 1. Encode in memory
+        let base64_encoded = general_purpose::STANDARD.encode(&jpeg_data);
+
+        // 2. Pass to your vision-capable LLM function
+        // Using the structure defined in the previous step
+        let response = send_image_to_llm(
+            &client,
+            "Say you were trying to reaserch something on the internet, on this search engine where would you enter input the search?",
+            &base64_encoded,
+            200,
+        );
+
+        println!("LLM Analysis: {:?}", response);
+        break;
     }
 
     /*

@@ -4,12 +4,12 @@ version = "0.0.1"
 edition = "2024"
 
 [dependencies]
+base64 = "0.22.1"
 headless_chrome = "1.0.22"
 input_method = "0.1.0"
 reqwest = { version = "0.13.4", features = ["json", "blocking"] }
 #rusqlite = { version = "0.40.1", features = ["bundled"] }
-rusqlite = "0.39.0" # to avoid cfg_select
+#rusqlite = "0.39.0" # to avoid cfg_select
 serde = { version = "1.0.150", features = ["derive"] }
+serde_json = "1.0.150"
 
-[toolchain]
-channel = "nightly"
