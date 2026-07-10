@@ -79,13 +79,6 @@ pub fn send_image_to_llm(
 
 const SCREENSHOTPROMPT: &str = "based off the screenshot reply";
 
-enum AgentState {
-    Observing,
-    Reasoning,
-    Acting,
-    Done,
-}
-
 fn main() {
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(120)) // Increase to 2 minutes or more
@@ -106,11 +99,6 @@ fn main() {
         let jpeg_data = tab
             .capture_screenshot(Page::CaptureScreenshotFormatOption::Jpeg, None, None, true)
             .unwrap();
-        std::fs::write("screenshot.jpeg", jpeg_data).unwrap();
-
-        let jpeg_data = tab
-            .capture_screenshot(Page::CaptureScreenshotFormatOption::Jpeg, None, None, true)
-            .unwrap();
 
         // 1. Encode in memory
         let base64_encoded = general_purpose::STANDARD.encode(&jpeg_data);
@@ -119,13 +107,15 @@ fn main() {
         // Using the structure defined in the previous step
         let response = send_image_to_llm(
             &client,
-            "Say you were trying to reaserch something on the internet, on this search engine where would you enter input the search?",
+            &format!(
+                "Describe the website in context to our goal {}, give only instruction needed for a llm to navigate the page.",
+                scout_task
+            ),
             &base64_encoded,
-            200,
+            500,
         );
 
         println!("LLM Analysis: {:?}", response);
-        break;
     }
 
     /*
