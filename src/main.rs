@@ -21,7 +21,11 @@ struct ChatPayload<'a> {
     stream: bool,
 }
 
-pub fn llm_response(client: &Client, input: &str) -> Result<String, reqwest::Error> {
+pub fn llm_response(
+    client: &Client,
+    input: &str,
+    max_tokens: i32,
+) -> Result<String, reqwest::Error> {
     let payload = ChatPayload {
         model: "google/gemma-4-e2b",
         messages: [
@@ -35,7 +39,7 @@ pub fn llm_response(client: &Client, input: &str) -> Result<String, reqwest::Err
             },
         ],
         temperature: 0.0,
-        max_tokens: -1,
+        max_tokens: max_tokens,
         stream: false,
     };
 
@@ -51,7 +55,7 @@ pub fn send_image_to_llm(
     client: &reqwest::blocking::Client,
     text_prompt: &str,
     base64_image: &str,
-    max_tokens: u16,
+    max_tokens: i32,
 ) -> Result<String, reqwest::Error> {
     let payload = serde_json::json!({
         "model": "google/gemma-4-e2b",
@@ -77,6 +81,18 @@ pub fn send_image_to_llm(
     response.text()
 }
 
+const BROWSERPROMPT: &str = "
+    You are a browser agent. Analyze the provided accessibility tree and screenshot. 
+    Return ONLY one action at a time from this list, and make sure to say RUN, before the select action to confirm:
+    TAB - Focus next
+    ENTER - Submit
+    UPARROW - Scrolls up
+    DOWNARROW - Scrolls down
+    TYPING text between these gets typed ENDTYPING 
+    HOME - Return to search engine home
+    Your reaserch task is:
+";
+
 fn main() {
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(120)) // Increase to 2 minutes or more
@@ -95,8 +111,29 @@ fn main() {
     tab.navigate_to("https://duckduckgo.com").unwrap();
     tab.wait_until_navigated().unwrap();
 
+    tab.press_key("Tab").unwrap();
+
     // scout loop
     loop {
+        let focused_element_info = tab
+            .evaluate(
+                r#"
+        (function() {
+            const el = document.activeElement;
+            return {
+                tagName: el.tagName,
+                id: el.id,
+                name: el.getAttribute('name') || '',
+                placeholder: el.getAttribute('placeholder') || '',
+                innerText: el.innerText ? el.innerText.substring(0, 50) : '',
+                ariaLabel: el.getAttribute('aria-label') || ''
+            };
+        })()
+        "#,
+                true,
+            )
+            .unwrap();
+
         let jpeg_data = tab
             .capture_screenshot(Page::CaptureScreenshotFormatOption::Jpeg, None, None, true)
             .unwrap();
@@ -106,12 +143,15 @@ fn main() {
         let response = send_image_to_llm(
             &client,
             &format!(
-                "Describe the website in context to our goal {}, give only instruction needed for a llm to navigate the page.",
-                scout_task
+                "{}{}, and this is the metadata of the currently in focuse element {:?}",
+                BROWSERPROMPT, scout_task, focused_element_info
             ),
             &base64_encoded,
-            1000,
-        );
+            200,
+        )
+        .unwrap();
+
+        println!("{}", response);
     }
 
     /*
