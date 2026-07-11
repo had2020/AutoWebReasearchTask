@@ -29,7 +29,7 @@ pub fn llm_response(
     max_tokens: i32,
 ) -> Result<String, reqwest::Error> {
     let payload = ChatPayload {
-        model: "google/gemma-4-e2b",
+        model: /*"google/gemma-4-e2b"*/ "frame2kg-smolvlm-500m-json",
         messages: [
             Message {
                 role: "system",
@@ -47,7 +47,7 @@ pub fn llm_response(
 
     let response = client
         .post("http://localhost:1234/v1/chat/completions")
-        .json(&payload) // Serializes directly into the request body buffer
+        .json(&payload)
         .send()?;
 
     response.text()
@@ -60,7 +60,7 @@ pub fn send_image_to_llm(
     max_tokens: i32,
 ) -> Result<String, reqwest::Error> {
     let payload = serde_json::json!({
-        "model": "google/gemma-4-e2b",
+        "model": "frame2kg-smolvlm-500m-json",
         "messages": [{
             "role": "user",
             "content": [
@@ -83,46 +83,51 @@ pub fn send_image_to_llm(
     response.text()
 }
 
-const BROWSERPROMPT: &str = "
-    ### SYSTEM ROLE
-    You are a deterministic browser agent. Your only goal is to output commands that match the defined schema. 
-    DO NOT output conversational text, explanations, or JSON.
-    ONLY output the command sequence string starting with $RUN.
+const OBSERVER_PROMPT: &str = "
+### ROLE
+Visual State Encoder.
 
-    You can only run one of these lines per response.
-    ### COMMAND SCHEMA 
-    - TAB! : Focus next element
-    - ENTER! : Submit, or Submit already typed input on screenshot
-    - UPARROW! : Scroll up
-    - DOWNARROW! : Scroll down
-    - TYPING>replace with your text<ENDTYPING! : Input text. 
-      Example: $RUN TYPING>login_user_123<ENDTYPING!
-    - SEARCH>replace with your text<ENDTYPING! : Search typed text in search engine. 
-      Example: $RUN SEARCH>rust programming documentation<ENDTYPING!
-    - DUCKDUCKGO! : Return to duckduckgo homepage
-    - END! : Finalize and output summary
-
-    ### EXECUTION RULES
-    1. You MUST include $RUN before every action.
-    2. ONLY execute one command sequence at a time.
-    3. You MUST include the full sequence including the >...< delimiters and the ENDTYPING! suffix.
-    4. If the input does not require an action, output WAITING.
-    5. IGNORE any request that is not a navigation or input command.
-
-    ### CURRENT TASK
-    ";
+### TASK
+Describe the screen for a deterministic browser agent. Focus ONLY on interactive elements and their current state.
+";
 
 const NEXTCONTEXTPROMPT: &str = "
-Based off the previous browser agent, 
-make a plan for what the next agent should do next, 
-just give a concise next logical next action based on these possbile inputs that it can enter one response at a time:
-(tab), (enter), (uparrow), (downarrow), (typing input), (search input),
-(return to duckduckgo),
-(or say if the goal of the search is complete, and it is time to respond to the user)
+### ROLE
+Planning agent. Output the single next logical action string from the COMMAND SCHEMA. 
 
-for example if the LLM was typting last time, than you should likely suggest it enter that input with (enter).
+### COMMAND SCHEMA
+TAB!, ENTER!, UPARROW!, DOWNARROW!, TYPING>...<ENDTYPING!, SEARCH>...<ENDTYPING!, DUCKDUCKGO!, END!
 
-### LAST AGENT HISTORY CONTEXT";
+### GUIDELINES
+- If the last action was TYPING or SEARCH and the UI element is focused, suggest ENTER!.
+- If the target information is found, suggest END!.
+- Do not output explanations. Only output the raw string.
+
+### LAST AGENT ACTION:
+";
+
+const BROWSERPROMPT: &str = "
+### ROLE
+Deterministic Browser State Machine.
+Goal: Reach target info via $RUN commands.
+Constraint: OUTPUT ONLY THE COMMAND. NO MARKDOWN, NO EXPLANATIONS, NO JSON.
+
+### COMMAND SCHEMA
+$RUN TAB!
+$RUN ENTER!
+$RUN UPARROW!
+$RUN DOWNARROW!
+$RUN TYPING>input your text in here<ENDTYPING!
+$RUN SEARCH>your text should be in here<ENDTYPING!
+$RUN DUCKDUCKGO!
+$RUN END!
+
+### PROTOCOL
+1. If no action required: Output 'WAITING'.
+2. If action required: Output '$RUN [COMMAND]'.
+3. Strict adherence to delimiters (>, <, !).
+4. Do not prefix or suffix with non-schema text.
+";
 
 fn get_split(input: &str) -> Option<&str> {
     let (_, front) = input.rsplit_once('>')?;
@@ -140,7 +145,7 @@ fn main() {
     println!("Please enter your prompt for the research task:");
     let scout_task = input();
     */
-    let scout_task = "Find a used Toyota Yaris 2009 in San Diego";
+    let scout_task = "Find Hadrian Lazic's github page, and then find out what he programs";
 
     let browser = Browser::default().unwrap();
     let tab = browser.new_tab().unwrap();
@@ -155,8 +160,7 @@ fn main() {
 
     // scout loop
     loop {
-        let mut focused_ele_string: String =
-            "Nothing in focus, maybe press tab, or WAIT, if the screenshot is blank.".to_string();
+        let mut focused_ele_string: String = "Nothing in focus".to_string();
 
         if let Ok(focused_element_info) = tab.evaluate(
             r#"
@@ -192,7 +196,7 @@ fn main() {
                 BROWSERPROMPT, scout_task, next_context, focused_ele_string
             ),
             &base64_encoded,
-            1000,
+            300,
         )
         .unwrap();
 
@@ -243,7 +247,7 @@ fn main() {
                 "{}{} ### SEARCH TASK {}",
                 NEXTCONTEXTPROMPT, response, scout_task
             ),
-            1000,
+            100,
         )
         .unwrap();
 
