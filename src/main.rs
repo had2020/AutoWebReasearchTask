@@ -6,6 +6,7 @@ use input_method::input;
 use reqwest::blocking::Client;
 use serde::Serialize;
 use std::default;
+use std::fmt::format;
 use std::time::Duration;
 
 #[derive(Serialize)]
@@ -91,25 +92,23 @@ Visual State Encoder.
 Describe the screen for a deterministic browser agent. Focus ONLY on interactive elements and their current state.
 ";
 
-const NEXTCONTEXTPROMPT: &str = "
+const PLANPROMPT: &str = "
 ### ROLE
-Planning agent. Output the single next logical action string from the COMMAND SCHEMA. 
+Planning agent. 
+Analyze the current state against the global goal and determine the next logical step.
 
-### COMMAND SCHEMA
-TAB!, ENTER!, UPARROW!, DOWNARROW!, TYPING>...<ENDTYPING!, SEARCH>...<ENDTYPING!, DUCKDUCKGO!, END!
+### PROTOCOL
+1. [OBSERVATION]: Identify the primary blocker or missing data.
+2. [STRATEGY]: Choose the most efficient sequence of UI interactions to resolve the blocker.
+3. [NEXT_STEP]: Define a single, atomic action (e.g., 'submit login', 'click search button', 'navigate to X').
 
-### GUIDELINES
-- If the last action was TYPING or SEARCH and the UI element is focused, suggest ENTER!.
-- If the target information is found, suggest END!.
-- Do not output explanations. Only output the raw string.
-
-### LAST AGENT ACTION:
+### TASK GOAL:
 ";
 
-const BROWSERPROMPT: &str = "
+const ACTIONPROMPT: &str = "
 ### ROLE
 Deterministic Browser State Machine.
-Goal: Reach target info via $RUN commands.
+GOAL: choose one of the following commands in the schema acording to the reasoning.
 Constraint: OUTPUT ONLY THE COMMAND. NO MARKDOWN, NO EXPLANATIONS, NO JSON.
 
 ### COMMAND SCHEMA
@@ -127,6 +126,36 @@ $RUN END!
 2. If action required: Output '$RUN [COMMAND]'.
 3. Strict adherence to delimiters (>, <, !).
 4. Do not prefix or suffix with non-schema text.
+";
+
+const MEMORYPROMPT: &str = "
+### ROLE
+State Compression Engineer.
+
+### TASK
+Condense the provided interaction history into a 'Persistent State Buffer'. 
+Your goal is to maximize entropy per token while maintaining the causal trail for the browser agent.
+
+### COMPRESSION PROTOCOL
+1. **TRIM:** Remove all conversational pleasantries, redundant meta-commentary, and repetitive UI descriptions.
+2. **RESOLVE:** Collapse sequential navigation steps into a single state change (e.g., instead of 'clicked search, typed X, clicked Y', output 'Searched for X, arrived at Y').
+3. **PRESERVE:** 
+   - Retain the absolute current goal.
+   - Retain only the most recent 'successful' navigation path.
+   - Explicitly note any 'blocked' states or encountered errors (crucial for future branching).
+   - Retain key data extracted from previous pages (identifiers, URLs, specific values).
+
+### OUTPUT FORMAT (Data-Oriented)
+[CURRENT_GOAL]: ...
+[LAST_SUCCESSFUL_STATE]: ...
+[BLOCKED_BY]: (None or Error Type)
+[KEY_DATA]: (Key-value pairs only)
+[REMAINING_STEPS]: (Brief list of next likely actions)
+
+### CONSTRAINTS
+- Strict brevity: Target under 200 tokens.
+- No prose. Use telegraphic, technical syntax.
+- Maintain a strict causal link between past errors and the current path.
 ";
 
 fn get_split(input: &str) -> Option<&str> {
@@ -154,9 +183,7 @@ fn main() {
     tab.wait_until_navigated().unwrap();
     tab.enable_stealth_mode().unwrap();
 
-    let mut next_context: String =
-        "This is the first search, there is no plans yet, add plans after this response"
-            .to_string();
+    let mut long_term_context: String = "This is your first State Compression".to_string();
 
     // scout loop
     loop {
@@ -189,20 +216,32 @@ fn main() {
 
         let base64_encoded = general_purpose::STANDARD.encode(&jpeg_data);
 
+        // decode visual
         let response = send_image_to_llm(
             &client,
             &format!(
-                "{}{} ### PLAN BASED OFF LAST ACTION {} ### METADATA OF FOCUSED ELEMENT {}",
-                BROWSERPROMPT, scout_task, next_context, focused_ele_string
+                "{} ### METADATA OF FOCUSED ELEMENT {}",
+                OBSERVER_PROMPT, focused_ele_string
             ),
             &base64_encoded,
-            300,
+            500,
         )
         .unwrap();
 
-        println!("{}", response); // debug
+        // plan
+        let plan = llm_response(
+            &client,
+            &format!(
+                "{}{} ### Long Term Task History {} ### Current Visual {}",
+                PLANPROMPT, scout_task, long_term_context, response
+            ),
+            500,
+        )
+        .unwrap();
 
-        let command_start = (response.rsplit_once('$'))
+        let action = llm_response(&client, &plan, 50).unwrap();
+
+        let command_start = (action.rsplit_once('$'))
             .unwrap_or(("xxxxxxxxxxxx", "xxxxxxxxxxxxxx"))
             .1;
         unsafe {
@@ -241,17 +280,16 @@ fn main() {
             }
         }
 
-        next_context = llm_response(
+        // remember
+        long_term_context = llm_response(
             &client,
             &format!(
-                "{}{} ### SEARCH TASK {}",
-                NEXTCONTEXTPROMPT, response, scout_task
+                "Last State Compression: {}, Current plan used: {}, Current action done: {}",
+                long_term_context, plan, action
             ),
-            100,
+            500,
         )
         .unwrap();
-
-        println!("{}", next_context); //debug
     }
 
     /*
